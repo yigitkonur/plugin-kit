@@ -43,6 +43,7 @@ Switching on writes `<folder>/.claude/settings.json` (or `settings.local.json` w
 
 - Installed globally and off (`defaultEnabled: false` in the Claude manifest; Codex `enabled = false` through `plugin install`). Turned on per project.
 - One version, in the manifests. Claude manifest, Codex manifest and marketplace entries carry the same string. Never in code.
+- `.github/kit.json` with `{"install": "global"}` marks the one plugin (research) that is installed globally and stays ON; check-manifests then forbids `defaultEnabled: false` and render.py writes the global variant of the block.
 - The README install block and the AGENTS.md release block are rendered from this repo between `kit:` markers; `scripts/kit/check-manifests.py` fails CI when a block, a vendored file or the shared CI job drifts.
 - A push to `main` that changes shipped files releases: `feat` is a minor, `fix`/`perf` a patch, `!` or `BREAKING CHANGE` a major (a minor while 0.x). Docs, CI, tests and chore-only pushes release nothing. The `release` workflow runs after `ci` is green, tags `vX` and `<plugin>--vX` and publishes the GitHub release.
 
