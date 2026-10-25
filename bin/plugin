@@ -388,7 +388,11 @@ def update(entries, everything, say):
 
 
 def cron_lines():
-    py = "HOME=%s PATH=%s:%s/.local/bin:/usr/local/bin:/usr/bin:/bin flock -n /tmp/plugin-kit-update.lock python3 %s update --all --log" % (HOME, os.path.dirname(shutil.which("claude") or "/usr/local/bin/claude"), HOME, SELF)
+    dirs = []
+    for x in (os.path.dirname(shutil.which("claude") or ""), os.path.join(HOME, ".local", "bin"), "/usr/local/bin", "/usr/bin", "/bin"):
+        if x and x not in dirs:
+            dirs.append(x)
+    py = "HOME=%s PATH=%s flock -n /tmp/plugin-kit-update.lock python3 %s update --all --log" % (HOME, ":".join(dirs), SELF)
     return ["41 */6 * * * %s # plugin-kit" % py, "@reboot sleep 90 && %s # plugin-kit" % py]
 
 
@@ -420,6 +424,8 @@ def schedule_install(say):
             plistlib.dump(plist, f)
         run(["launchctl", "bootout", "gui/%s/%s" % (uid, LABEL)])
         rc, out, err = run(["launchctl", "bootstrap", "gui/" + uid, p])
+        if rc != 0:  # no GUI session for this user (ssh only): the older load form still registers it
+            rc, out, err = run(["launchctl", "load", "-w", p])
         say("launchd %s: %s" % (LABEL, "loaded" if rc == 0 else last_line(err, out)))
         return rc == 0
     rc, out, _ = run(["crontab", "-l"])
