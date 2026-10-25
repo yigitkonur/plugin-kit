@@ -3,7 +3,7 @@
 
 Usage: release.py [--root DIR] [--plugin NAME] [--level auto|patch|minor|major] [--apply] [--notes-out FILE] [--github-output]
 Dry run unless --apply. Python 3.9+, stdlib only; works on any plugin repo, so each repo vendors this one file
-(scripts/release.py). The canonical copy is yigitkonur/plugin-agentic-maker/scripts/release.py.
+(scripts/kit/release.py). The canonical copy is yigitkonur/plugin-kit/release/release.py; change it there and run sync.sh.
 
 Why: Claude Code updates an installed plugin only when its computed version changes (the manifest `version` string
 first), so every shipped change must bump it, and the bump must reach every place the version is written.
@@ -36,7 +36,7 @@ import re
 import subprocess
 
 # Not shipped to the people who install the plugin: a commit that touches only these never releases.
-IGNORED_DIRS = (".github/", "docs/", "doc/", "tests/", "test/", "evals/", "spikes/", "scripts/ci/", ".claude/")
+IGNORED_DIRS = (".github/", "docs/", "doc/", "tests/", "test/", "evals/", "spikes/", "scripts/ci/", "scripts/kit/", ".claude/")
 IGNORED_ROOT = re.compile(r"^(README|CHANGELOG|AGENTS|CLAUDE|CONTRIBUTING|LICENSE|NOTICE|CODEOWNERS)[^/]*$|^\.gitignore$|^\.gitattributes$")
 SKIP_WALK = {"node_modules", ".git", "tests", "test", "evals", "docs", "fixtures", ".claude"}
 CONV = re.compile(r"^(?P<type>[a-zA-Z]+)(\([^)]*\))?(?P<bang>!)?:\s*(?P<subject>.+)$")

@@ -1,6 +1,6 @@
 # plugin-kit
 
-The shared tooling behind every `yigitkonur/plugin-*` repo: one `plugin` command to see and switch plugins per project (Claude Code and Codex), and the one update job (the canonical release and CI files the plugin repos vendor land here next).
+The shared tooling behind every `yigitkonur/plugin-*` repo: one `plugin` command to see and switch plugins per project (Claude Code and Codex), and the one update job plus the canonical release and CI files the plugin repos vendor.
 
 The rule it enforces: **every plugin is installed once, globally, and off. A project turns it on.** The one exception is `research`, which is on everywhere in both hosts. Nothing is enabled globally, so no tokens are spent in chats that don't use a plugin.
 
@@ -35,11 +35,15 @@ Switching on writes `<folder>/.claude/settings.json` (or `settings.local.json` w
 | `bin/codex-plugin-project.sh` | Codex has no `plugin enable/disable`; this edits the global and per-project config (`on`, `off`, `global-on`, `global-off`) |
 | `bin/plugin-here`, `bin/sp` | thin shims for older READMEs |
 | `registry.json` | every plugin: id, repo, marketplace, Codex yes/no, `project` or `global` mode |
+| `release/release.py`, `release/release.yml` | the one release script and workflow every plugin repo vendors |
+| `ci/` | `check-manifests.py` (versions, install policy, Codex packaging, kit copies), `secret-scan.py`, `check-links.py`, `render.py` (the README install block and AGENTS.md block), `ci-manifests.yml` (the shared CI job) |
+| `sync.sh REPO...` | copy all of the above into plugin repos and refresh `scripts/kit.sha256` and the rendered blocks |
 
 ## the standard every plugin repo follows
 
 - Installed globally and off (`defaultEnabled: false` in the Claude manifest; Codex `enabled = false` through `plugin install`). Turned on per project.
 - One version, in the manifests. Claude manifest, Codex manifest and marketplace entries carry the same string. Never in code.
+- The README install block and the AGENTS.md release block are rendered from this repo between `kit:` markers; `scripts/kit/check-manifests.py` fails CI when a block, a vendored file or the shared CI job drifts.
 - A push to `main` that changes shipped files releases: `feat` is a minor, `fix`/`perf` a patch, `!` or `BREAKING CHANGE` a major (a minor while 0.x). Docs, CI, tests and chore-only pushes release nothing. The `release` workflow runs after `ci` is green, tags `vX` and `<plugin>--vX` and publishes the GitHub release.
 
 ## develop

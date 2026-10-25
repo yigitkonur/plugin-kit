@@ -13,7 +13,8 @@ jobs:
           python-version: "3.12"
       - name: Syntax
         run: |
-          python3 -m py_compile bin/plugin
+          python3 -m py_compile bin/plugin ci/check-manifests.py ci/secret-scan.py ci/check-links.py ci/render.py release/release.py
+          sh -n sync.sh
           sh -n install.sh
           bash -n bin/codex-plugin-project.sh
           sh -n bin/plugin-here
