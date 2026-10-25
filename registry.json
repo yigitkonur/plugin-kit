@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "note": "Every plugin we ship. mode=project: installed globally and off, switched on per project. mode=global: installed and on everywhere (research only). codex=false: no Codex port yet.",
+  "plugins": [
+    {"name": "agentic-maker",      "id": "agentic-maker@plugin-agentic-maker",        "repo": "yigitkonur/plugin-agentic-maker",      "marketplace": "plugin-agentic-maker",      "codex": true,  "mode": "project"},
+    {"name": "cf-browser",         "id": "cf-browser@plugin-cf-browser",              "repo": "yigitkonur/plugin-cf-browser",         "marketplace": "plugin-cf-browser",         "codex": true,  "mode": "project"},
+    {"name": "kernel-browser",     "id": "kernel-browser@plugin-kernel-sh",           "repo": "yigitkonur/plugin-kernel-sh",          "marketplace": "plugin-kernel-sh",          "codex": false, "mode": "project"},
+    {"name": "kernel-dev",         "id": "kernel-dev@plugin-kernel-sh",               "repo": "yigitkonur/plugin-kernel-sh",          "marketplace": "plugin-kernel-sh",          "codex": false, "mode": "project"},
+    {"name": "mcp-use",            "id": "mcp-use@plugin-mcp-use",                    "repo": "yigitkonur/plugin-mcp-use",            "marketplace": "plugin-mcp-use",            "codex": true,  "mode": "project"},
+    {"name": "sentry",             "id": "sentry@plugin-sentry",                      "repo": "yigitkonur/plugin-sentry",             "marketplace": "plugin-sentry",             "codex": true,  "mode": "project"},
+    {"name": "testsprite",         "id": "testsprite@plugin-testsprite",              "repo": "yigitkonur/plugin-testsprite",         "marketplace": "plugin-testsprite",         "codex": true,  "mode": "project"},
+    {"name": "trigger-dev",        "id": "trigger-dev@plugin-trigger-dev",            "repo": "yigitkonur/plugin-trigger-dev",        "marketplace": "plugin-trigger-dev",        "codex": true,  "mode": "project"},
+    {"name": "ts-optimize",        "id": "ts-optimize@claude-ts-optimize-plugin",     "repo": "yigitkonur/plugin-typescript-optimizer", "marketplace": "claude-ts-optimize-plugin", "codex": true,  "mode": "project"},
+    {"name": "herdr-conductor",    "id": "herdr-conductor@herdr-conductor",           "repo": "yigitkonur/herdr-conductor",           "marketplace": "herdr-conductor",           "codex": true,  "mode": "project"},
+    {"name": "agentic-tests",      "id": "agentic-tests@agentic-tests",               "repo": "yigitkonur/plugin-agentic-tests",      "marketplace": "agentic-tests",             "codex": true,  "mode": "project"},
+    {"name": "agentic-tests-api",  "id": "agentic-tests-api@agentic-tests",           "repo": "yigitkonur/plugin-agentic-tests",      "marketplace": "agentic-tests",             "codex": false, "mode": "project"},
+    {"name": "agentic-tests-mcp",  "id": "agentic-tests-mcp@agentic-tests",           "repo": "yigitkonur/plugin-agentic-tests",      "marketplace": "agentic-tests",             "codex": false, "mode": "project"},
+    {"name": "agentic-tests-mobile","id": "agentic-tests-mobile@agentic-tests",       "repo": "yigitkonur/plugin-agentic-tests",      "marketplace": "agentic-tests",             "codex": false, "mode": "project"},
+    {"name": "agentic-tests-web",  "id": "agentic-tests-web@agentic-tests",           "repo": "yigitkonur/plugin-agentic-tests",      "marketplace": "agentic-tests",             "codex": false, "mode": "project"},
+    {"name": "research",           "id": "research@plugin-research-powerpack",        "repo": "yigitkonur/plugin-research-powerpack", "marketplace": "plugin-research-powerpack", "codex": true,  "mode": "global"}
+  ]
+}

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Kept for old READMEs: plugin-here on|off <plugin@marketplace> [dir]  ==  plugin on|off <plugin@marketplace> [dir]
+d="$(cd "$(dirname "$0")" && pwd)"
+mode="${1:-}"; id="${2:-}"; dir="${3:-$PWD}"
+case "$mode" in
+  on)  exec "$d/plugin" on "$id" "$dir" --trust ;;
+  off) exec "$d/plugin" off "$id" "$dir" ;;
+  *)   echo "usage: plugin-here on|off <plugin@marketplace> [dir]   (now: plugin on|off NAME [dir])" >&2; exit 2 ;;
+esac

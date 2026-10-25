@@ -1,0 +1,9 @@
+#!/bin/sh
+# Kept for the sentry README: sp on|off|status [dir] [--trust]  ==  plugin on|off|status sentry [dir]
+d="$(cd "$(dirname "$0")" && pwd)"
+cmd="${1:-status}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  on|off) exec "$d/plugin" "$cmd" sentry "$@" ;;
+  status) "$d/plugin" status "$@" | sed -n '1,2p;/^sentry /p' ;;
+  *)      echo "usage: sp on|off|status [dir] [--trust]   (now: plugin on|off sentry [dir])" >&2; exit 2 ;;
+esac

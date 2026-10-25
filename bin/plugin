@@ -1,0 +1,676 @@
+#!/usr/bin/env python3
+"""plugin: see and switch our plugins per project, in Claude Code and in Codex.
+
+  plugin                              TUI for the current folder (a plain table on a dumb terminal or a pipe)
+  plugin status [DIR] [--json]        what is on here, per host
+  plugin on  NAME... [DIR] [--trust]  switch on here (installs it globally, off, first when it is missing)
+  plugin off NAME... [DIR]            switch off here
+  plugin install [NAME...|all]        global install; off, except `research`, which is on everywhere
+  plugin update [NAME...|--all] [--log]   refresh marketplaces and update installed plugins, both hosts
+  plugin autoupdate install|status    the 6-hourly job that runs `plugin update --all --log`
+  plugin doctor                       is this machine in the standard state (exit 1 when not)
+  plugin list                         the registry
+
+Every plugin is installed once, globally, and off; a project turns it on. Python 3.11+, standard library only.
+"""
+import curses
+import datetime
+import json
+import os
+import platform
+import plistlib
+import re
+import shutil
+import subprocess
+import sys
+
+try:
+    import tomllib
+except ImportError:
+    sys.exit("plugin: needs Python 3.11 or newer (this is %s)" % sys.version.split()[0])
+
+HOME = os.path.expanduser("~")
+SELF = os.path.realpath(__file__)
+BIN = os.path.dirname(SELF)
+KIT = os.path.dirname(BIN)
+HELPER = os.path.join(BIN, "codex-plugin-project.sh")
+CLAUDE_HOME = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude")
+CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.join(HOME, ".codex")
+LOG = os.path.join(HOME, ".claude", "logs", "plugin-autoupdate.log")
+LABEL = "dev.plugin-kit.autoupdate"
+OLD_LABELS = ("com.yigit.claude-plugin-autoupdate", "com.yigitkonur.tsp-update")
+OLD_CRON = ("plugin-autoupdate", "tsp-update-installs")
+os.environ["PATH"] = os.pathsep.join([os.environ.get("PATH", ""), os.path.join(HOME, ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", os.path.join(HOME, ".claude", "local")])
+
+
+# ---------------------------------------------------------------- small helpers
+def run(args, cwd=None, timeout=180):
+    try:
+        r = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 127, "", "%s: %s" % (args[0], e)
+    return r.returncode, r.stdout.strip(), r.stderr.strip()
+
+
+def have(cmd):
+    return shutil.which(cmd) is not None
+
+
+def load_json(path, default=None):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return default
+
+
+def load_toml(path):
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def write_json(path, data):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def msg(result):
+    rc, out, err = result
+    return last_line(err, out) if rc else last_line(out, err)
+
+
+def last_line(*texts):
+    for t in texts:
+        if t:
+            return t.strip().splitlines()[-1]
+    return ""
+
+
+REG = (load_json(os.path.join(KIT, "registry.json"), {}) or {}).get("plugins", [])
+
+
+def resolve(word):
+    w = word.lower()
+    for e in REG:
+        if w in (e["name"], e["id"]):
+            return e
+    hits = [e for e in REG if e["name"].startswith(w)]
+    return hits[0] if len(hits) == 1 else None
+
+
+# ---------------------------------------------------------------- reading state
+def claude_rows():
+    if not have("claude"):
+        return None
+    rc, out, _ = run(["claude", "plugin", "list", "--json"], timeout=60)
+    try:
+        return json.loads(out) if out else []
+    except ValueError:
+        return []
+
+
+def claude_flag(d, pid):
+    """True/False when this folder's .claude settings say so (settings.local.json wins), else None."""
+    val = None
+    for f in ("settings.json", "settings.local.json"):
+        v = ((load_json(os.path.join(d, ".claude", f), {}) or {}).get("enabledPlugins") or {}).get(pid)
+        if isinstance(v, bool):
+            val = v
+    return val
+
+
+def codex_rows(d):
+    """id -> (installed, enabled, version), as Codex itself sees it from folder d (project layer included)."""
+    if not have("codex"):
+        return None
+    _, out, _ = run(["codex", "plugin", "list"], cwd=d, timeout=60)
+    rows = {}
+    for ln in out.splitlines():
+        m = re.match(r"^(\S+@\S+)\s{2,}(installed, enabled|installed, disabled|not installed)\s*(\S+)?", ln)
+        if m:
+            inst = m.group(2).startswith("installed")
+            rows[m.group(1)] = (inst, m.group(2).endswith("enabled"), m.group(3) if inst else None)
+    return rows
+
+
+def codex_global(pid):
+    return ((load_toml(os.path.join(CODEX_HOME, "config.toml")).get("plugins") or {}).get(pid) or {}).get("enabled")
+
+
+def codex_proj(d, pid):
+    return ((load_toml(os.path.join(d, ".codex", "config.toml")).get("plugins") or {}).get(pid) or {}).get("enabled")
+
+
+def codex_trusted(d):
+    return ((load_toml(os.path.join(CODEX_HOME, "config.toml")).get("projects") or {}).get(d) or {}).get("trust_level") == "trusted"
+
+
+def latest_version(e):
+    base = os.path.join(CLAUDE_HOME, "plugins", "marketplaces", e["marketplace"])
+    mk = load_json(os.path.join(base, ".claude-plugin", "marketplace.json"), {}) or {}
+    for p in mk.get("plugins", []):
+        if p.get("name") == e["name"]:
+            if p.get("version"):
+                return p["version"]
+            src = p.get("source")
+            if isinstance(src, str):
+                return (load_json(os.path.join(base, src, ".claude-plugin", "plugin.json"), {}) or {}).get("version")
+    return None
+
+
+def collect(d):
+    d = os.path.realpath(d)
+    crows, xrows, trusted = claude_rows(), codex_rows(d), codex_trusted(d)
+    out = []
+    for e in REG:
+        r = {"entry": e, "name": e["name"], "dir": d, "trusted": trusted}
+        recs = [x for x in (crows or []) if x["id"] == e["id"]]
+        user = [x for x in recs if x["scope"] == "user"]
+        base = user[0] if user else (recs[0] if recs else None)
+        r["c_inst"] = base is not None
+        r["c_ver"] = base["version"] if base else None
+        r["c_global"] = bool(user and user[0]["enabled"])
+        r["c_proj"] = claude_flag(d, e["id"])
+        r["c_on"] = r["c_proj"] if r["c_proj"] is not None else r["c_global"]
+        r["c_extra"] = [x["scope"] for x in recs if x["scope"] != "user"]
+        inst, en, ver = (xrows or {}).get(e["id"], (False, False, None))
+        r["x_avail"] = bool(e["codex"])
+        r["x_inst"], r["x_on"], r["x_ver"] = inst, en, ver
+        r["x_global"] = bool(codex_global(e["id"]))
+        r["x_proj"] = codex_proj(d, e["id"])
+        r["latest"] = latest_version(e)
+        out.append(r)
+    return out
+
+
+def cell(host, r):
+    if host == "x" and not r["x_avail"]:
+        return "n/a"
+    if not r[host + "_inst"]:
+        return "-"
+    if r[host + "_on"]:
+        return "on(global)" if (r[host + "_global"] and r[host + "_proj"] is not True) else "on"
+    if host == "x" and r["x_proj"] is True and not r["trusted"]:
+        return "untrusted"
+    return "off"
+
+
+def version_cell(r):
+    c, x, lat = r["c_ver"], r["x_ver"], r["latest"]
+    v = c or x or "-"
+    if c and x and c != x:
+        v = "%s (codex %s)" % (c, x)
+    if lat and (c and c != lat or (not c and x and x != lat)):
+        v += " -> " + lat
+    return v
+
+
+def table(rows, d):
+    lines = ["plugin status for %s" % d, "%-22s %-11s %-11s %s" % ("", "claude", "codex", "version")]
+    for r in rows:
+        tag = "  (global by policy)" if r["entry"]["mode"] == "global" else ""
+        lines.append("%-22s %-11s %-11s %s%s" % (r["name"], cell("c", r), cell("x", r), version_cell(r), tag))
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------- switching
+def claude_scope(d):
+    if run(["git", "ls-files", "--error-unmatch", ".claude/settings.json"], cwd=d)[0] == 0:
+        return "local", "settings.local.json"
+    return "project", "settings.json"
+
+
+def git_exclude(d, rel):
+    if run(["git", "rev-parse", "--git-dir"], cwd=d)[0] != 0 or run(["git", "check-ignore", "-q", rel], cwd=d)[0] == 0:
+        return
+    _, ex, _ = run(["git", "rev-parse", "--git-path", "info/exclude"], cwd=d)
+    ex = ex if os.path.isabs(ex) else os.path.join(d, ex)
+    try:
+        os.makedirs(os.path.dirname(ex), exist_ok=True)
+        have_line = os.path.exists(ex) and rel in open(ex).read().splitlines()
+        if not have_line:
+            with open(ex, "a") as f:
+                f.write(rel + "\n")
+    except OSError:
+        pass
+
+
+def claude_set(e, d, on):
+    scope, f = claude_scope(d)
+    rc, out, err = run(["claude", "plugin", "enable" if on else "disable", e["id"], "--scope", scope], cwd=d)
+    if rc != 0 and "already" not in (out + err):
+        return False, "claude: " + (last_line(err, out) or "failed")
+    if on:
+        git_exclude(d, ".claude/" + f)
+    return True, "claude: %s here (%s scope)" % ("on" if on else "off", scope)
+
+
+def codex_set(e, d, on, trust):
+    args = [HELPER, "on" if on else "off", e["id"], d] + (["--trust"] if on and trust else [])
+    rc, out, err = run(args)
+    if rc != 0:
+        return False, "codex: " + (last_line(err, out) or "failed")
+    if on:
+        git_exclude(d, ".codex/config.toml")
+    return True, "codex: %s here" % ("on" if on else "off") + ("" if not on or trust or codex_trusted(d) else " (folder not trusted, Codex will ignore it)")
+
+
+def set_autoupdate(e):
+    p = os.path.join(CLAUDE_HOME, "settings.json")
+    s = load_json(p, None)
+    if s is None:
+        s = {}
+    k = s.setdefault("extraKnownMarketplaces", {})
+    cur = k.get(e["marketplace"])
+    if cur and cur.get("autoUpdate") is True:
+        return
+    cur = cur or {"source": {"source": "github", "repo": e["repo"]}}
+    cur["autoUpdate"] = True
+    k[e["marketplace"]] = cur
+    write_json(p, s)
+
+
+def machine_setup():
+    """Settings every machine gets: https plugin fetches (all our repos are public) and a settings backup once."""
+    p = os.path.join(CLAUDE_HOME, "settings.json")
+    s = load_json(p, None)
+    if s is None:
+        return
+    env = s.setdefault("env", {})
+    if env.get("CLAUDE_CODE_PLUGIN_PREFER_HTTPS") != "1":
+        if not os.path.exists(p + ".bak-plugin-kit"):
+            shutil.copy(p, p + ".bak-plugin-kit")
+        env["CLAUDE_CODE_PLUGIN_PREFER_HTTPS"] = "1"
+        write_json(p, s)
+
+
+def install(e, say):
+    ok = True
+    want_on = e["mode"] == "global"
+    if have("claude"):
+        known = load_json(os.path.join(CLAUDE_HOME, "plugins", "known_marketplaces.json"), {}) or {}
+        if e["marketplace"] not in known:
+            rc, out, err = run(["claude", "plugin", "marketplace", "add", e["repo"]])
+            say("%s: claude marketplace add: %s" % (e["name"], last_line(err, out)))
+        users = lambda: [x for x in (claude_rows() or []) if x["id"] == e["id"] and x["scope"] == "user"]
+        if not users():
+            rc, out, err = run(["claude", "plugin", "install", e["id"], "-s", "user"])
+            say("%s: claude install: %s" % (e["name"], last_line(err, out)))
+        u = users()
+        if not u:
+            ok = False
+        elif u[0]["enabled"] != want_on:
+            rc, out, err = run(["claude", "plugin", "enable" if want_on else "disable", e["id"], "-s", "user"])
+            say("%s: claude %s globally: %s" % (e["name"], "enable" if want_on else "disable", last_line(err, out)))
+        set_autoupdate(e)
+    if have("codex") and e["codex"]:
+        if e["marketplace"] not in (load_toml(os.path.join(CODEX_HOME, "config.toml")).get("marketplaces") or {}):
+            rc, out, err = run(["codex", "plugin", "marketplace", "add", e["repo"]])
+            say("%s: codex marketplace add: %s" % (e["name"], last_line(err, out)))
+        inst, en, _ = (codex_rows(HOME) or {}).get(e["id"], (False, False, None))
+        if not inst:
+            rc, out, err = run(["codex", "plugin", "add", e["id"]])
+            say("%s: codex add: %s" % (e["name"], last_line(err, out)))
+            inst, en, _ = (codex_rows(HOME) or {}).get(e["id"], (False, False, None))
+        if not inst:
+            ok = False
+        elif en != want_on:
+            rc, out, err = run([HELPER, "global-on" if want_on else "global-off", e["id"]])
+            say("%s: codex %s globally: %s" % (e["name"], "on" if want_on else "off", last_line(err, out)))
+    return ok
+
+
+def turn(rows, r, hosts, on, d, trust, say):
+    """Switch plugin row r on or off in folder d for the given hosts ('c', 'x')."""
+    e = r["entry"]
+    if e["mode"] == "global":
+        say("%s is global by policy: on everywhere, nothing to switch per project" % e["name"])
+        return False
+    ok = True
+    if on and not ((r["c_inst"] or not have("claude")) and (r["x_inst"] or not r["x_avail"] or not have("codex"))):
+        say("%s: not installed everywhere yet, installing globally (off) first" % e["name"])
+        ok = install(e, say)
+    if "c" in hosts and have("claude"):
+        good, msg = claude_set(e, d, on)
+        say(msg)
+        ok = ok and good
+    if "x" in hosts and r["x_avail"] and have("codex"):
+        good, msg = codex_set(e, d, on, trust)
+        say(msg)
+        ok = ok and good
+    return ok
+
+
+# ---------------------------------------------------------------- update + schedule
+def log_to(fh):
+    def say(msg):
+        line = "%s %s" % (datetime.datetime.now().isoformat(timespec="seconds"), msg)
+        fh.write(line + "\n")
+        fh.flush()
+    return say
+
+
+def update(entries, everything, say):
+    if everything and os.path.isdir(os.path.join(KIT, ".git")):
+        rc, out, err = run(["git", "-C", KIT, "pull", "--ff-only", "-q"], timeout=60)
+        say("kit: %s" % (last_line(err, out) or "up to date"))
+    if have("claude"):
+        settings = load_json(os.path.join(CLAUDE_HOME, "settings.json"), {}) or {}
+        markets = {e["marketplace"] for e in entries}
+        if everything:
+            markets |= {k for k, v in (settings.get("extraKnownMarketplaces") or {}).items() if v.get("autoUpdate")}
+        for m in sorted(markets):
+            say("claude marketplace %s: %s" % (m, msg(run(["claude", "plugin", "marketplace", "update", m], timeout=300))))
+        installed = (load_json(os.path.join(CLAUDE_HOME, "plugins", "installed_plugins.json"), {}) or {}).get("plugins", {})
+        ids = {e["id"] for e in entries}
+        for key, recs in sorted(installed.items()):
+            if not (key in ids or (everything and key.split("@", 1)[-1] in markets)):
+                continue
+            for rec in recs:
+                scope, path = rec.get("scope", "user"), rec.get("projectPath")
+                cwd = path if scope in ("project", "local") else HOME
+                if not cwd or not os.path.isdir(cwd):
+                    say("claude skip %s (%s): folder %s is gone" % (key, scope, path))
+                    continue
+                say("claude update %s [%s]: %s" % (key, scope, msg(run(["claude", "plugin", "update", key, "--scope", scope], cwd=cwd, timeout=300))))
+    if have("codex"):
+        cfg = load_toml(os.path.join(CODEX_HOME, "config.toml")).get("marketplaces") or {}
+        names = [None] if everything else sorted({e["marketplace"] for e in entries if e["codex"] and e["marketplace"] in cfg})
+        for m in names:
+            args = ["codex", "plugin", "marketplace", "upgrade"] + ([m] if m else [])
+            say("codex marketplace %s: %s" % (m or "(all)", msg(run(args, timeout=300))))
+
+
+def cron_lines():
+    py = "HOME=%s PATH=%s:%s/.local/bin:/usr/local/bin:/usr/bin:/bin flock -n /tmp/plugin-kit-update.lock python3 %s update --all --log" % (HOME, os.path.dirname(shutil.which("claude") or "/usr/local/bin/claude"), HOME, SELF)
+    return ["41 */6 * * * %s # plugin-kit" % py, "@reboot sleep 90 && %s # plugin-kit" % py]
+
+
+def schedule_status():
+    if platform.system() == "Darwin":
+        rc, out, _ = run(["launchctl", "list", LABEL])
+        return rc == 0
+    rc, out, _ = run(["crontab", "-l"])
+    return "# plugin-kit" in out
+
+
+def schedule_install(say):
+    if platform.system() == "Darwin":
+        agents = os.path.join(HOME, "Library", "LaunchAgents")
+        uid = str(os.getuid())
+        os.makedirs(agents, exist_ok=True)
+        retired = os.path.join(CLAUDE_HOME, "bin", "retired")
+        for lab in OLD_LABELS:
+            p = os.path.join(agents, lab + ".plist")
+            run(["launchctl", "bootout", "gui/%s/%s" % (uid, lab)])
+            if os.path.exists(p):
+                os.makedirs(retired, exist_ok=True)
+                shutil.move(p, os.path.join(retired, lab + ".plist"))
+                say("retired old job " + lab)
+        p = os.path.join(agents, LABEL + ".plist")
+        plist = {"Label": LABEL, "ProgramArguments": ["/usr/bin/env", "python3", SELF, "update", "--all", "--log"], "RunAtLoad": True, "StartInterval": 21600,
+                 "EnvironmentVariables": {"HOME": HOME, "PATH": os.environ["PATH"]}, "StandardErrorPath": os.path.join(HOME, ".claude", "logs", "plugin-kit.err")}
+        with open(p, "wb") as f:
+            plistlib.dump(plist, f)
+        run(["launchctl", "bootout", "gui/%s/%s" % (uid, LABEL)])
+        rc, out, err = run(["launchctl", "bootstrap", "gui/" + uid, p])
+        say("launchd %s: %s" % (LABEL, "loaded" if rc == 0 else last_line(err, out)))
+        return rc == 0
+    rc, out, _ = run(["crontab", "-l"])
+    keep = [ln for ln in (out.splitlines() if rc == 0 else []) if "# plugin-kit" not in ln and not any(o in ln for o in OLD_CRON)]
+    dropped = len((out.splitlines() if rc == 0 else [])) - len(keep)
+    p = subprocess.run(["crontab", "-"], input="\n".join(keep + cron_lines()) + "\n", text=True, capture_output=True)
+    say("cron: %s (%d old lines replaced)" % ("installed" if p.returncode == 0 else p.stderr.strip(), dropped))
+    return p.returncode == 0
+
+
+# ---------------------------------------------------------------- doctor
+def doctor():
+    bad = [0]
+
+    def line(level, msg):
+        if level == "FAIL":
+            bad[0] += 1
+        print("%-5s %s" % (level, msg))
+
+    print("plugin doctor on %s (%s)" % (platform.node(), platform.system()))
+    if os.path.isdir(os.path.join(KIT, ".git")):
+        run(["git", "-C", KIT, "fetch", "-q"], timeout=60)
+        behind = run(["git", "-C", KIT, "rev-list", "--count", "HEAD..origin/main"])[1]
+        line("ok" if behind in ("0", "") else "WARN", "plugin-kit %s" % ("is current" if behind in ("0", "") else "is %s commits behind (plugin update --all)" % behind))
+    on_path = shutil.which("codex-plugin-project.sh")
+    line("ok" if on_path and os.path.realpath(on_path) == HELPER else "WARN", "codex-plugin-project.sh on PATH is %s" % ("the kit's" if on_path and os.path.realpath(on_path) == HELPER else "missing or a different copy (%s)" % on_path))
+    https = ((load_json(os.path.join(CLAUDE_HOME, "settings.json"), {}) or {}).get("env") or {}).get("CLAUDE_CODE_PLUGIN_PREFER_HTTPS") == "1"
+    line("ok" if https else "WARN", "CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1 %s" % ("set" if https else "not set (plugin install does it)"))
+    line("ok" if schedule_status() else "FAIL", "update job %s" % ("scheduled" if schedule_status() else "not scheduled (plugin autoupdate install)"))
+    if platform.system() == "Darwin":
+        old = [lab for lab in OLD_LABELS if run(["launchctl", "list", lab])[0] == 0]
+    else:
+        old = [o for o in OLD_CRON if o in run(["crontab", "-l"])[1]]
+    if old:
+        line("WARN", "old updater still scheduled: %s (plugin autoupdate install retires it)" % ", ".join(old))
+    crows, xrows = claude_rows(), codex_rows(HOME)
+    for e in REG:
+        want = e["mode"] == "global"
+        word = "on" if want else "off"
+        recs = [x for x in (crows or []) if x["id"] == e["id"]]
+        user = [x for x in recs if x["scope"] == "user"]
+        lat = latest_version(e)
+        if crows is None:
+            line("WARN", "%s: claude not found" % e["name"])
+        elif not user:
+            line("FAIL", "%s: claude: not installed at user scope" % e["name"])
+        elif user[0]["enabled"] != want:
+            line("FAIL", "%s: claude: globally %s, should be %s" % (e["name"], "on" if user[0]["enabled"] else "off", word))
+        elif lat and user[0]["version"] != lat:
+            line("WARN", "%s: claude: %s, latest is %s (plugin update)" % (e["name"], user[0]["version"], lat))
+        else:
+            line("ok", "%s: claude %s globally %s" % (e["name"], user[0]["version"], word))
+        for x in recs:
+            if x["scope"] != "user":
+                line("WARN", "%s: claude: leftover %s-scope install at %s" % (e["name"], x["scope"], x.get("projectPath", "?")))
+        if e["codex"]:
+            inst, en, ver = (xrows or {}).get(e["id"], (False, False, None))
+            if xrows is None:
+                line("WARN", "%s: codex not found" % e["name"])
+            elif not inst:
+                line("FAIL", "%s: codex: not installed" % e["name"])
+            elif en != want:
+                line("FAIL", "%s: codex: globally %s, should be %s" % (e["name"], "on" if en else "off", word))
+            elif user and ver != user[0]["version"]:
+                line("WARN", "%s: codex %s but claude %s (plugin update)" % (e["name"], ver, user[0]["version"]))
+            else:
+                line("ok", "%s: codex %s globally %s" % (e["name"], ver, word))
+    print("%s" % ("all good" if not bad[0] else "%d problem(s): plugin install all" % bad[0]))
+    return 1 if bad[0] else 0
+
+
+# ---------------------------------------------------------------- TUI
+def tui(d):
+    d = os.path.realpath(d)
+
+    def app(scr):
+        curses.curs_set(0)
+        curses.use_default_colors()
+        for i, c in enumerate((curses.COLOR_GREEN, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_CYAN), 1):
+            curses.init_pair(i, c, -1)
+        state = {"rows": collect(d), "sel": 0, "msg": "space: both hosts   c: claude   x: codex   i: install   u: update   r: refresh   q: quit"}
+
+        def put(y, x, text, attr=0):
+            h, w = scr.getmaxyx()
+            if 0 <= y < h and x < w:
+                scr.addnstr(y, x, text, max(0, w - x - 1), attr)
+
+        def paint():
+            scr.erase()
+            put(0, 0, "plugin  " + d, curses.A_BOLD)
+            put(2, 0, "%-22s %-11s %-11s %s" % ("", "claude", "codex", "version"), curses.A_DIM)
+            for i, r in enumerate(state["rows"]):
+                y = 3 + i
+                base = curses.A_REVERSE if i == state["sel"] else 0
+                put(y, 0, " " * 60, base)
+                put(y, 0, "%-22s" % r["name"], base)
+                for j, h in enumerate(("c", "x")):
+                    txt = cell(h, r)
+                    col = curses.color_pair(1) if txt.startswith("on") else curses.color_pair(2) if txt == "untrusted" else curses.A_DIM if txt in ("-", "n/a") else 0
+                    put(y, 23 + j * 12, "%-11s" % txt, base | col)
+                put(y, 47, version_cell(r) + ("  (global)" if r["entry"]["mode"] == "global" else ""), base)
+            h, _ = scr.getmaxyx()
+            put(h - 2, 0, state["msg"], curses.color_pair(4))
+            put(h - 1, 0, "Restart claude / codex in this folder after switching (or /reload-plugins in an open claude).", curses.A_DIM)
+            scr.refresh()
+
+        def say(m):
+            state["msg"] = m
+            paint()
+
+        def ask(prompt):
+            say(prompt + " [y/N]")
+            return scr.getch() in (ord("y"), ord("Y"))
+
+        def act(hosts, want=None):
+            r = state["rows"][state["sel"]]
+            if want is None:
+                sel = [h for h in hosts if (h == "c" and r["c_inst"]) or (h == "x" and r["x_avail"] and r["x_inst"])] or list(hosts)
+                want = not all(r[h + "_on"] for h in sel)
+            trust = False
+            if want and "x" in hosts and r["x_avail"] and not r["trusted"] and have("codex"):
+                trust = ask("Trust %s in Codex? (it also enables this folder's hooks and rules)" % d)
+            turn(state["rows"], r, hosts, want, d, trust, say)
+            state["rows"] = collect(d)
+
+        paint()
+        while True:
+            k = scr.getch()
+            n = len(state["rows"])
+            if k in (ord("q"), 27):
+                return
+            elif k in (curses.KEY_UP, ord("k")):
+                state["sel"] = (state["sel"] - 1) % n
+            elif k in (curses.KEY_DOWN, ord("j")):
+                state["sel"] = (state["sel"] + 1) % n
+            elif k in (ord(" "), 10, 13):
+                act(("c", "x"))
+            elif k == ord("c"):
+                act(("c",))
+            elif k == ord("x"):
+                act(("x",))
+            elif k == ord("i"):
+                say("installing %s globally..." % state["rows"][state["sel"]]["name"])
+                install(state["rows"][state["sel"]]["entry"], say)
+                state["rows"] = collect(d)
+            elif k == ord("u"):
+                e = state["rows"][state["sel"]]["entry"]
+                say("updating %s..." % e["name"])
+                update([e], False, say)
+                state["rows"] = collect(d)
+            elif k == ord("r"):
+                state["rows"] = collect(d)
+                state["msg"] = "refreshed"
+            paint()
+
+    curses.wrapper(app)
+
+
+# ---------------------------------------------------------------- commands
+def split_args(rest):
+    flags = {a for a in rest if a.startswith("-")}
+    names, d = [], None
+    for a in (a for a in rest if not a.startswith("-")):
+        e = resolve(a)
+        if e:
+            names.append(e)
+        elif os.path.isdir(a):
+            d = a
+        else:
+            sys.exit("plugin: no plugin or folder called '%s' (plugin list shows the names)" % a)
+    return flags, names, os.path.realpath(d or os.getcwd())
+
+
+def main(argv):
+    cmd, rest = (argv[0] if argv else ""), argv[1:]
+    interactive = sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM", "dumb") != "dumb"
+    if cmd in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    if cmd == "":
+        if interactive:
+            tui(os.getcwd())
+        else:
+            print(table(collect(os.getcwd()), os.getcwd()))
+        return 0
+    if cmd == "list":
+        for e in REG:
+            print("%-22s %-45s %-8s %s" % (e["name"], e["id"], e["mode"], "claude+codex" if e["codex"] else "claude only"))
+        return 0
+    if cmd == "status":
+        flags, _, d = split_args(rest)
+        rows = collect(d)
+        if "--json" in flags:
+            print(json.dumps([{k: v for k, v in r.items() if k != "entry"} | {"id": r["entry"]["id"], "mode": r["entry"]["mode"]} for r in rows], indent=2))
+        else:
+            print(table(rows, d))
+        return 0
+    if cmd in ("on", "off"):
+        flags, names, d = split_args(rest)
+        if not names:
+            if interactive:
+                tui(d)
+                return 0
+            sys.exit("usage: plugin %s NAME... [DIR]" % cmd)
+        rows = {r["name"]: r for r in collect(d)}
+        trust = "--trust" in flags or "-y" in flags
+        ok = True
+        for e in names:
+            r = rows[e["name"]]
+            t = trust
+            if cmd == "on" and r["x_avail"] and have("codex") and not t and not r["trusted"] and interactive:
+                t = input("Trust %s in Codex? It also enables this folder's hooks and rules. [y/N] " % d).strip().lower() == "y"
+            ok = turn(rows, r, ("c", "x"), cmd == "on", d, t, lambda m, n=e["name"]: print("%s: %s" % (n, m))) and ok
+        print("Restart claude / codex in %s (or /reload-plugins in an open claude)." % d)
+        return 0 if ok else 1
+    if cmd == "install":
+        flags, names, _ = split_args([a for a in rest if a != "all"])
+        entries = names or REG
+        machine_setup()
+        bad = 0
+        for e in entries:
+            good = install(e, lambda m: print(m))
+            print("%-20s %s" % (e["name"], "ok" if good else "FAILED"))
+            bad += 0 if good else 1
+        return 1 if bad else 0
+    if cmd == "update":
+        flags, names, _ = split_args(rest)
+        everything = "--all" in flags or not names
+        fh = None
+        if "--log" in flags:
+            os.makedirs(os.path.dirname(LOG), exist_ok=True)
+            fh = open(LOG, "a")
+            say = log_to(fh)
+        else:
+            say = print
+        say("start (%s)" % ("all" if everything else ", ".join(e["name"] for e in names)))
+        update(names or REG, everything, say)
+        say("done")
+        return 0
+    if cmd == "autoupdate":
+        sub = rest[0] if rest else "status"
+        if sub == "install":
+            return 0 if schedule_install(print) else 1
+        print("update job: %s" % ("scheduled" if schedule_status() else "NOT scheduled (plugin autoupdate install)"))
+        if os.path.exists(LOG):
+            print("".join(open(LOG).readlines()[-5:]).rstrip())
+        return 0
+    if cmd == "doctor":
+        return doctor()
+    sys.exit("plugin: unknown command '%s' (plugin --help)" % cmd)
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

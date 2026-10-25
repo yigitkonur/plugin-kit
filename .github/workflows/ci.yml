@@ -1,0 +1,38 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Syntax
+        run: |
+          python3 -m py_compile bin/plugin
+          sh -n install.sh
+          bash -n bin/codex-plugin-project.sh
+          sh -n bin/plugin-here
+          sh -n bin/sp
+      - name: Registry
+        run: |
+          python3 - <<'PY'
+          import json
+          d = json.load(open("registry.json"))["plugins"]
+          ids = [p["id"] for p in d]
+          assert len(ids) == len(set(ids)), "duplicate id"
+          for p in d:
+              assert p["id"] == p["name"] + "@" + p["marketplace"], p["id"]
+              assert p["mode"] in ("project", "global"), p["id"]
+              assert p["repo"].startswith("yigitkonur/"), p["id"]
+          assert [p["name"] for p in d if p["mode"] == "global"] == ["research"], "only research is global"
+          print(len(d), "plugins ok")
+          PY
+      - name: plugin runs
+        run: |
+          python3 bin/plugin list
+          python3 bin/plugin status | head -3
