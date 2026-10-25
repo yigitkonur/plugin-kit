@@ -253,6 +253,9 @@ def claude_set(e, d, on):
     rc, out, err = run(["claude", "plugin", "enable" if on else "disable", e["id"], "--scope", scope], cwd=d)
     if rc != 0 and "already" not in (out + err):
         return False, "claude: " + (last_line(err, out) or "failed")
+    # "already enabled" can mean the plugin is on globally and nothing was written here: trust the file, not the message
+    if claude_flag(d, e["id"]) is not on:
+        return False, "claude: %s did not take effect in %s (%s)" % ("enable" if on else "disable", d, last_line(err, out) or "no change written; switch the plugin off globally first")
     if on:
         git_exclude(d, ".claude/" + f)
     return True, "claude: %s here (%s scope)" % ("on" if on else "off", scope)
