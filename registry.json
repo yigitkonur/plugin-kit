@@ -123,6 +123,14 @@
       "mode": "project"
     },
     {
+      "name": "swiftui",
+      "id": "swiftui@claude-swiftui-plugin",
+      "repo": "yigitkonur/plugin-swiftui",
+      "marketplace": "claude-swiftui-plugin",
+      "codex": true,
+      "mode": "project"
+    },
+    {
       "name": "research",
       "id": "research@plugin-research-powerpack",
       "repo": "yigitkonur/plugin-research-powerpack",
