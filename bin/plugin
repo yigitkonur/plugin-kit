@@ -387,10 +387,13 @@ def update(entries, everything, say):
                 say("claude update %s [%s]: %s" % (key, scope, msg(run(["claude", "plugin", "update", key, "--scope", scope], cwd=cwd, timeout=300))))
     if have("codex"):
         cfg = load_toml(os.path.join(CODEX_HOME, "config.toml")).get("marketplaces") or {}
-        names = [None] if everything else sorted({e["marketplace"] for e in entries if e["codex"] and e["marketplace"] in cfg})
+        # one named upgrade per marketplace: the bare `upgrade` refreshed snapshots on tugce without moving the installed plugin
+        if everything:
+            names = sorted(k for k, v in cfg.items() if v.get("source_type") == "git")
+        else:
+            names = sorted({e["marketplace"] for e in entries if e["codex"] and e["marketplace"] in cfg})
         for m in names:
-            args = ["codex", "plugin", "marketplace", "upgrade"] + ([m] if m else [])
-            say("codex marketplace %s: %s" % (m or "(all)", msg(run(args, timeout=300))))
+            say("codex marketplace %s: %s" % (m, msg(run(["codex", "plugin", "marketplace", "upgrade", m], timeout=300))))
 
 
 def cron_lines():
