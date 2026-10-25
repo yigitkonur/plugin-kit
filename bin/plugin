@@ -109,11 +109,12 @@ def resolve(word):
 def claude_rows():
     if not have("claude"):
         return None
-    rc, out, _ = run(["claude", "plugin", "list", "--json"], timeout=60)
+    rc, out, _ = run(["claude", "plugin", "list", "--json"], timeout=150)
     try:
-        return json.loads(out) if out else []
+        rows = json.loads(out) if rc == 0 and out else None
     except ValueError:
-        return []
+        rows = None
+    return rows if isinstance(rows, list) else None   # None = the call failed (busy machine, timeout): never read as "nothing installed"
 
 
 def claude_flag(d, pid):
@@ -130,7 +131,9 @@ def codex_rows(d):
     """id -> (installed, enabled, version), as Codex itself sees it from folder d (project layer included)."""
     if not have("codex"):
         return None
-    _, out, _ = run(["codex", "plugin", "list"], cwd=d, timeout=60)
+    rc, out, _ = run(["codex", "plugin", "list"], cwd=d, timeout=150)
+    if rc != 0:
+        return None
     rows = {}
     for ln in out.splitlines():
         m = re.match(r"^(\S+@\S+)\s{2,}(installed, enabled|installed, disabled|not installed)\s*(\S+)?", ln)
@@ -174,7 +177,7 @@ def collect(d):
         recs = [x for x in (crows or []) if x["id"] == e["id"]]
         user = [x for x in recs if x["scope"] == "user"]
         base = user[0] if user else (recs[0] if recs else None)
-        r["c_inst"] = base is not None
+        r["c_inst"] = (base is not None) if crows is not None else None
         r["c_ver"] = base["version"] if base else None
         r["c_global"] = bool(user and user[0]["enabled"])
         r["c_proj"] = claude_flag(d, e["id"])
@@ -182,7 +185,7 @@ def collect(d):
         r["c_extra"] = [x["scope"] for x in recs if x["scope"] != "user"]
         inst, en, ver = (xrows or {}).get(e["id"], (False, False, None))
         r["x_avail"] = bool(e["codex"])
-        r["x_inst"], r["x_on"], r["x_ver"] = inst, en, ver
+        r["x_inst"], r["x_on"], r["x_ver"] = (inst if xrows is not None else None), en, ver
         r["x_global"] = bool(codex_global(e["id"]))
         r["x_proj"] = codex_proj(d, e["id"])
         r["latest"] = latest_version(e)
@@ -193,6 +196,8 @@ def collect(d):
 def cell(host, r):
     if host == "x" and not r["x_avail"]:
         return "n/a"
+    if r[host + "_inst"] is None:
+        return "?"
     if not r[host + "_inst"]:
         return "-"
     if r[host + "_on"]:
@@ -463,6 +468,10 @@ def doctor():
     if old:
         line("WARN", "old updater still scheduled: %s (plugin autoupdate install retires it)" % ", ".join(old))
     crows, xrows = claude_rows(), codex_rows(HOME)
+    if have("claude") and crows is None:
+        line("WARN", "claude plugin list failed or timed out (busy machine?): claude checks skipped, rerun doctor")
+    if have("codex") and xrows is None:
+        line("WARN", "codex plugin list failed or timed out (busy machine?): codex checks skipped, rerun doctor")
     for e in REG:
         want = e["mode"] == "global"
         word = "on" if want else "off"
@@ -470,7 +479,7 @@ def doctor():
         user = [x for x in recs if x["scope"] == "user"]
         lat = latest_version(e)
         if crows is None:
-            line("WARN", "%s: claude not found" % e["name"])
+            pass
         elif not user:
             line("FAIL", "%s: claude: not installed at user scope" % e["name"])
         elif user[0]["enabled"] != want:
@@ -485,7 +494,7 @@ def doctor():
         if e["codex"]:
             inst, en, ver = (xrows or {}).get(e["id"], (False, False, None))
             if xrows is None:
-                line("WARN", "%s: codex not found" % e["name"])
+                pass
             elif not inst:
                 line("FAIL", "%s: codex: not installed" % e["name"])
             elif en != want:
