@@ -15,6 +15,7 @@ Every plugin is installed once, globally, and off; a project turns it on. Python
 """
 import curses
 import datetime
+import fcntl
 import json
 import os
 import platform
@@ -654,13 +655,14 @@ def main(argv):
     if cmd == "update":
         flags, names, _ = split_args(rest)
         everything = "--all" in flags or not names
-        fh = None
-        if "--log" in flags:
-            os.makedirs(os.path.dirname(LOG), exist_ok=True)
-            fh = open(LOG, "a")
-            say = log_to(fh)
-        else:
-            say = print
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        lock = open(os.path.join(os.path.dirname(LOG), "plugin-kit.lock"), "w")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            print("plugin: another update is already running")
+            return 0
+        say = log_to(open(LOG, "a")) if "--log" in flags else print
         say("start (%s)" % ("all" if everything else ", ".join(e["name"] for e in names)))
         update(names or REG, everything, say)
         say("done")
