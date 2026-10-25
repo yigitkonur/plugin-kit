@@ -72,9 +72,10 @@ def install_block(repo, market, names, codex):
     o.append("")
     o.append("```sh")
     o.append("cd your-project")
-    o.append("plugin on %s%s" % (names[0], "        # Claude Code" + (" and Codex" if codex else "") + ", this folder only"))
-    o.append("plugin off %s       # undo" % names[0])
-    o.append("plugin                  # or pick from a list (TUI)")
+    w = len("plugin off %s" % names[0]) + 3
+    o.append(("plugin on %s" % names[0]).ljust(w) + "# Claude Code" + (" and Codex" if codex else "") + ", this folder only")
+    o.append(("plugin off %s" % names[0]).ljust(w) + "# undo")
+    o.append("plugin".ljust(w) + "# or pick from a list (TUI)")
     o.append("```")
     o.append("")
     o.append("By hand, without the `plugin` command:")
