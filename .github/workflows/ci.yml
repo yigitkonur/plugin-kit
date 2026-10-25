@@ -33,6 +33,11 @@ jobs:
           assert [p["name"] for p in d if p["mode"] == "global"] == ["research"], "only research is global"
           print(len(d), "plugins ok")
           PY
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Codex helper tests (moved from plugin-mcp-use)
+        run: node --test tests/
       - name: plugin runs
         run: |
           python3 bin/plugin list
