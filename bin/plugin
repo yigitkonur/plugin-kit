@@ -5,6 +5,7 @@
   plugin status [DIR] [--json]        what is on here, per host
   plugin on  NAME... [DIR] [--trust]  switch on here (installs it globally, off, first when it is missing)
   plugin off NAME... [DIR]            switch off here
+                                      (either one: --claude or --codex limits it to that host)
   plugin install [NAME...|all]        global install; off, except `research`, which is on everywhere
   plugin update [NAME...|--all] [--log]   refresh marketplaces and update installed plugins, both hosts
   plugin autoupdate install|status    the 6-hourly job that runs `plugin update --all --log`
@@ -651,7 +652,8 @@ def main(argv):
             t = trust
             if cmd == "on" and r["x_avail"] and have("codex") and not t and not r["trusted"] and interactive:
                 t = input("Trust %s in Codex? It also enables this folder's hooks and rules. [y/N] " % d).strip().lower() == "y"
-            ok = turn(rows, r, ("c", "x"), cmd == "on", d, t, lambda m, n=e["name"]: print("%s: %s" % (n, m))) and ok
+            hosts = tuple(h for h, f in (("c", "--claude"), ("x", "--codex")) if f in flags) or ("c", "x")
+            ok = turn(rows, r, hosts, cmd == "on", d, t, lambda m, n=e["name"]: print("%s: %s" % (n, m))) and ok
         print("Restart claude / codex in %s (or /reload-plugins in an open claude)." % d)
         return 0 if ok else 1
     if cmd == "install":
